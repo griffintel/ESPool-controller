@@ -1,0 +1,699 @@
+---
+# Pool Controller
+# 
+substitutions:
+  device_name: "pool-controller"
+  friendly_name: "Pool Controller"
+  device_description: "ESP32-WROOM-32U located under deck"
+  area: "Backyard"
+  encryption_key: !secret pool-controller_encryption_key
+  update_interval: 30s
+  one_wire_pin: GPIO04
+
+packages:
+  <<: !include_dir_named common
+  board: !include boards/esp32dev_idf.yaml
+  one_wire: !include components/one_wire.yaml
+  web_server: !include components/web_server.yaml
+
+esphome:
+  on_boot:
+    - priority: 800
+      then:
+        - delay: 10s
+        - climate.control:
+            id: pool_thermostat
+            mode: "OFF"
+
+preferences:
+  flash_write_interval: "24h"
+
+text_sensor:
+  - platform: template
+    name: Pool Pump Status
+    id: pool_pump_status
+    lambda: |-
+      return {};
+  - platform: template
+    name: Heater Bypass Status
+    id: heater_bypass_status
+    lambda: |-
+      return {};
+
+script:
+  ## Toggle Pump Speed
+  - id: toggle_pump_speed
+    then:
+      - logger.log:
+          format: ">>>>>toggle_pump_speed>>>>> script is running"
+          level: INFO
+      ## If pump is powered off then toggle pump speed
+      - if:
+          condition:
+            - switch.is_off: pump_power
+          then:
+            - logger.log:
+                format: ">>>>>toggle_pump_speed>>>>> pump_power is OFF, toggling pump_speed"
+                level: INFO
+            - switch.toggle: pump_speed
+          ## If pump is powered on then turn power off, wait, toggle speed, wait, then turn on power
+          else:
+            - logger.log:
+                format: ">>>>>toggle_pump_speed>>>>> pump_power is ON, running turn_off_pump script, toggling pump_speed, turning ON pump_power"
+                level: INFO
+            - script.execute: turn_off_pump
+            - script.wait: turn_off_pump
+            - logger.log:
+                format: ">>>>>toggle_pump_speed>>>>> turn_off_pump executed, toggling pump_speed, turning ON pump_power"
+                level: INFO
+            - switch.toggle: pump_speed
+            - delay: 2s
+            - logger.log:
+                format: ">>>>>toggle_pump_speed>>>>> toggled pump_speed, turning ON pump_power"
+                level: INFO
+            - switch.turn_on: pump_power
+  ## Turn ON Heater Bypass
+  - id: turn_on_heater_bypass
+    then:
+      - logger.log:
+          format: ">>>>>turn_on_heater_bypass>>>>> script is running"
+          level: INFO
+      - if:
+          condition:
+            - switch.is_off: heater_bypass
+          then:
+            - logger.log:
+                format: ">>>>>turn_on_heater_bypass>>>>> heater_bypass is OFF"
+                level: INFO
+            ## Check if Heat Pump is OFF
+            - if:
+                condition:
+                  - switch.is_off: heat_pump
+                then:
+                  - if:
+                      condition:
+                        - for:
+                            time: 30s
+                            condition:
+                              switch.is_off: heat_pump
+                      then:
+                        - logger.log:
+                            format: ">>>>>turn_on_heater_bypass>>>>> heat_pump has been OFF for 30s, turning heater_bypass ON"
+                            level: INFO
+                        - switch.turn_on: heater_bypass
+                else:
+                  - logger.log:
+                      format: ">>>>>turn_on_heater_bypass>>>>> heat_pump has not been OFF for 30s, confirming heat_pump is OFF, waiting and then turning heater_bypass ON"
+                      level: INFO
+                  - switch.turn_off: heat_pump
+                  - delay: 30s
+                  - logger.log:
+                      format: ">>>>>turn_on_heater_bypass>>>>> heat_pump is off, turning heater_bypass ON"
+                      level: INFO
+                  - switch.turn_on: heater_bypass
+          ## Bypass is already on, log and continue
+          else:
+            - logger.log:
+                format: ">>>>>turn_on_heater_bypass>>>>> bypass was already ON"
+                level: INFO
+  ## Turn OFF Pump
+  - id: turn_off_pump
+    then:
+      - logger.log:
+          format: ">>>>>turn_off_pump>>>>> script is running"
+          level: INFO
+      ## If Heat Pump is off then pump turns off immediately otherwise it will turn off the heat pump, wait 30s and then turn off pump
+      - if:
+          condition:
+            and:
+              - switch.is_off: heat_pump
+              - for:
+                  time: 30s
+                  condition:
+                    switch.is_off: heat_pump
+          then:
+            - logger.log:
+                format: ">>>>>turn_off_pump>>>>> heat_pump has been OFF for 30s, turning pump_power OFF"
+                level: INFO
+            - switch.turn_off: pump_power
+          else:
+            - logger.log:
+                format: ">>>>>turn_off_pump>>>>> heat_pump has not been OFF for 30s, confirming heat_pump is OFF, waiting 30s, turning pump_power OFF"
+                level: INFO
+            - switch.turn_off: heat_pump
+            - delay: 30s
+            - switch.turn_off: pump_power
+  ## Set Pump Speed to LOW
+  - id: set_pump_speed_low
+    then:
+      - logger.log:
+          format: ">>>>>set_pump_speed_low>>>>> script is running"
+          level: INFO
+      ## If Pump is ON, Turn OFF, set to LOW, Then turn ON pump
+      - if:
+          condition:
+            - switch.is_on: pump_speed
+          then:
+            - logger.log:
+                format: ">>>>>set_pump_speed_low>>>>> pump_speed is ON"
+                level: INFO
+            - if:
+                condition:
+                  - switch.is_on: pump_power
+                then:
+                  - logger.log:
+                      format: ">>>>>set_pump_speed_low>>>>> pump_power is ON, turning OFF pump_power, turning OFF pump_speed, returning pump_power to ON"
+                      level: INFO
+                  - script.execute: turn_off_pump
+                  - script.wait: turn_off_pump
+                  - logger.log:
+                      format: ">>>>>set_pump_speed_low>>>>> executed turn_off_pump script, turning OFF pump_speed, returning pump_power to ON"
+                      level: INFO
+                  - delay: 1s
+                  - switch.turn_off: pump_speed
+                  - delay: 1s
+                  - switch.turn_on: pump_power
+                ## If Pump is OFF, set to LOW
+                else:
+                  - logger.log:
+                      format: ">>>>>set_pump_speed_low>>>>> pump_power is OFF, turning pump_speed OFF"
+                      level: INFO
+                  - switch.turn_off: pump_speed
+          else:
+            - logger.log:
+                format: ">>>>>set_pump_speed_low>>>>> pump_speed is already OFF"
+                level: INFO
+  ## Set Pump speed to HIGH
+  - id: set_pump_speed_high
+    then:
+      - logger.log:
+          format: ">>>>>set_pump_speed_high>>>>> script running"
+          level: INFO
+      ## If Pump is ON, Turn OFF set to HIGH, Then turn ON pump
+      - if:
+          condition:
+            - switch.is_off: pump_speed
+          then:
+            - logger.log:
+                format: ">>>>>set_pump_speed_high script>>>>> pump_speed is OFF"
+                level: INFO
+            - if:
+                condition:
+                  - switch.is_on: pump_power
+                then:
+                  - logger.log:  
+                      format: ">>>>>set_pump_speed_high>>>>> pump_power is ON, running turn_off_pump, turning ON pump_speed, returning pump_power to ON"
+                      level: INFO
+                  - script.execute: turn_off_pump
+                  - script.wait: turn_off_pump
+                  - logger.log:  
+                      format: ">>>>>set_pump_speed_high>>>>> executed turn_off_pump script, turning ON pump_speed, returning pump_power to ON"
+                      level: INFO
+                  - delay: 1s
+                  - switch.turn_on: pump_speed
+                  - delay: 1s
+                  - switch.turn_on: pump_power
+                ## If Pump is OFF, set to HIGH
+                else:
+                  - logger.log:
+                      format: ">>>>>set_pump_speed_high>>>>> pump_power is OFF, turning pump_speed ON"
+                      level: INFO
+                  - switch.turn_on: pump_speed
+          else:
+            - logger.log:
+                format: ">>>>>set_pump_speed_high>>>>> pump_speed is already ON"
+                level: INFO
+  ## Turn ON Heat
+  - id: turn_on_heat_pump
+    then:
+      - logger.log:
+          format: ">>>>>turn_on_heat_pump>>>>> script running"
+          level: INFO
+      ## If heater bypass and pump power are on then it turns on the heat pump
+      - if:
+          condition:
+              - for:
+                  time: 30s
+                  condition:
+                    switch.is_off: heater_bypass
+          then:
+            - logger.log: 
+                format: ">>>>>turn_on_heat_pump>>>>> heater_bypass has been OFF for 30s"
+                level: INFO
+            - if:
+                condition:
+                  - switch.is_on: pump_power
+                then:
+                  - logger.log:
+                      format: ">>>>>turn_on_heat_pump>>>>> heater_bypass has been OFF for 30s, pump_power is ON, turning heat_pump ON"
+                      level: INFO
+                  - switch.turn_on: heat_pump
+                else:
+                  - logger.log:
+                      format: ">>>>>turn_on_heat_pump script>>>>> pump_power is OFF, running set_pump_speed_low script, turning pump_power ON, turning heat_pump ON"
+                      level: INFO
+                  - script.execute: set_pump_speed_low
+                  - script.wait: set_pump_speed_low
+                  - logger.log:
+                      format: ">>>>>turn_on_heat_pump script>>>>> executed set_pump_speed_low, turning pump_power ON, turning heat_pump ON"
+                      level: INFO
+                  - switch.turn_on: pump_power
+                  - delay: 5s
+                  - switch.turn_on: heat_pump
+          else:
+            - logger.log:
+                format: ">>>>>turn_on_heat_pump>>>>> heater_bypass has not been OFF for 30s, running set_pump_speed_low script, turning pump_power ON, turning heater_bypass OFF, turning heat_pump ON"
+                level: INFO
+            - script.execute: set_pump_speed_low
+            - script.wait: set_pump_speed_low
+            - logger.log:
+                format: ">>>>>turn_on_heat_pump>>>>> executed set_pump_speed_low, turning pump_power ON, turning heater_bypass OFF, turning heat_pump ON"
+                level: INFO
+            - switch.turn_on: pump_power
+            - logger.log:
+                format: ">>>>>turn_on_heat_pump>>>>> pump_power ON, running turn_off_heater_bypass script, turning heat_pump ON"
+                level: INFO
+            - script.execute: turn_off_heater_bypass
+            - script.wait: turn_off_heater_bypass
+            - logger.log:
+                format: ">>>>>turn_on_heat_pump>>>>> executed turn_off_heater_bypass, turning heat_pump ON"
+                level: INFO
+            - delay: 20s
+            - switch.turn_on: heat_pump
+  ## Turns OFF Heater Bypass
+  - id: turn_off_heater_bypass
+    then:
+      - logger.log:
+          format: ">>>>>turn_off_heater_bypass>>>>> script running"
+          level: INFO
+      - if:
+          condition:
+            - switch.is_on: heater_bypass
+          then:
+            - logger.log:
+                format: ">>>>>turn_off_heater_bypass>>>>> turning heater_bypass OFF"
+                level: INFO
+            - switch.turn_off: heater_bypass
+          else:
+            - logger.log:
+                format: ">>>>>turn_off_heater_bypass script>>>>> heater_bypass is already OFF, log and continue"
+                level: INFO
+
+light:
+  - platform: esp32_rmt_led_strip
+    rgb_order: GRB
+    pin: 16
+    num_leds: 1
+    rmt_channel: 0
+    restore_mode: ALWAYS_OFF
+    chipset: ws2812
+    id: device_led
+    name: "${friendly_name} Status LED"
+    effects:
+      - pulse:
+          name: "Fast Pulse"
+          transition_length: 0.5s
+          update_interval: 0.5s
+          min_brightness: 20%
+          max_brightness: 80%
+      - pulse:
+          name: "Slow Pulse"
+          update_interval: 1s
+          transition_length: 1s
+          min_brightness: 20%
+          max_brightness: 80%
+
+sensor:
+  ## Pool filter pressure sensor
+  - platform: adc
+    name: "Filter Pressure"
+    pin: GPIO32
+    id: pressure_sensor
+    device_class: voltage
+    update_interval: 10s
+    # unit_of_measurement: "PSI"
+    accuracy_decimals: 2
+    attenuation: auto
+    # filters:
+    #   - calibrate_linear:
+    #     - 0.25 -> 0.0
+    #     - 2.25 -> 60
+  #   #   - median:
+  #   #       window_size: 50
+  #   #       send_every: 5
+  #   #   - lambda: |-
+  #   #       if (x <= 0){
+  #   #         return 0;
+  #   #       } else {
+  #   #         return x;}
+  ## Pool water temperature sensor
+  - platform: dallas_temp
+    one_wire_id: device_one_wire
+    address: 0x46012058f2aafe28
+    device_class: temperature
+    name: "Pool Water Temperature"
+    id: pool_water_temperature
+    filters:
+      - lambda: return x * (9.0/5.0) + 32.0;
+    unit_of_measurement: "°F"
+  ## Ambient air temperature sesnor
+  # - platform: dallas_temp
+  #   one_wire_id: device_one_wire
+  #   address: 0xe33c01e07674b128
+  #   device_class: temperature
+  #   name: "Backyard Temperature"
+  #   update_interval: 1s
+  #   filters:
+  #     - sliding_window_moving_average:
+  #         window_size: 10
+  #         send_every: 1
+  #     - or:
+  #         - throttle: 120s
+  #         - delta: 0.2
+  #     - lambda: return x * (9.0/5.0) + 32.0;
+  #   unit_of_measurement: "°F"
+
+switch:
+  ## Template switch to control pump speed in home assistant interface
+  - platform: template
+    name: "Pump Speed"
+    restore_mode: ALWAYS_OFF
+    id: pump_speed_template
+    internal: true
+    lambda: |-
+      if (id(pump_speed).state) {
+        return true;
+      } else {
+        return false;
+      }
+    turn_on_action:
+      - script.execute: set_pump_speed_high
+    turn_off_action:
+      - script.execute: set_pump_speed_low
+  ## Relay to control Pool Pump Power Contactor
+  - platform: gpio
+    id: pump_power
+    icon: mdi:pump
+    name: "Pump Power"
+    internal: true
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: 25
+      mode:
+        output: true
+    on_turn_on:
+      then:
+        - text_sensor.template.publish:
+            id: pool_pump_status
+            state: "ON"
+        - if:
+            condition:
+              - lambda: 'return id(pool_thermostat).mode == 0;'
+            then:
+              - if:
+                  condition:
+                    - switch.is_on: pump_speed
+                  then:
+                    - text_sensor.template.publish:
+                        id: pool_pump_status
+                        state: "HIGH"
+                    - light.turn_on:
+                        id: device_led
+                        effect: "Fast Pulse"
+                        red: 0%
+                        green: 100%
+                        blue: 0%
+                        brightness: 80%
+                  else:
+                    - text_sensor.template.publish:
+                        id: pool_pump_status
+                        state: "LOW"
+                    - light.turn_on:
+                        id: device_led
+                        effect: "Slow Pulse"
+                        red: 0%
+                        green: 100%
+                        blue: 0%
+                        brightness: 80%
+    on_turn_off:
+      then:
+        - text_sensor.template.publish:
+            id: pool_pump_status
+            state: "OFF"
+        - light.turn_off: device_led
+  ## Relay to control Pool Pump Speed Contactor
+  - platform: gpio
+    internal: true
+    id: pump_speed
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: 26
+      mode:
+        output: true
+  ## Relay for Fireman's Switch on Heat Pump
+  - platform: gpio
+    name: "Heat Pump"
+    internal: true
+    id: heat_pump
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: 27
+      mode:
+        output: true
+  - platform: output
+    name: "Heat Pump Bypass"
+    internal: true
+    id: heater_bypass
+    output: heater_bypass_output
+    restore_mode: ALWAYS_ON
+    on_turn_off:
+      then:
+        - text_sensor.template.publish:
+            id: heater_bypass_status
+            state: "OFF"
+    on_turn_on:
+      then:
+        - text_sensor.template.publish:
+            id: heater_bypass_status
+            state: "ON"
+
+output:
+  ## Relay for 24V Diverter
+  - platform: gpio
+    id: heater_bypass_output
+    power_supply: heater_bypass_power_supply
+    pin:
+      number: 14
+
+power_supply:
+  ## Relay to Bypass Heater
+  - id: heater_bypass_power_supply
+    keep_on_time: 45s
+    pin:
+      number: 33
+
+binary_sensor:
+  ## Reed switch for patio gate
+  - platform: gpio
+    name: "Patio Gate"
+    device_class: door
+    icon: mdi:gate
+    pin:
+      number: 35
+      mode:
+        input: true
+      inverted: false
+  ## Read Switch to detect state of pool cover
+  - platform: gpio
+    name: "Pool Cover"
+    icon: mdi:pool
+    device_class: opening
+    pin:
+      number: 34
+      mode:
+        input: true
+      inverted: false
+    filters:
+      - delayed_on_off: 20ms
+  ## Read Switch to detect state of deck gate
+  - platform: gpio
+    name: "Deck Gate"
+    icon: mdi:gate
+    device_class: door
+    pin:
+      number: 36
+      mode:
+        input: true
+      inverted: false
+    filters:
+      - delayed_on_off: 20ms
+  ## Monentary push button switch that turns pump on and off
+  - platform: gpio
+    name: "Pump Power Button"
+    internal: true
+    pin: 
+      number: 5
+      mode:
+        input: true
+      inverted: false
+    id: pump_power_button
+    on_click:
+      - min_length: 70ms
+        max_length: 500ms
+        then:
+          - logger.log:
+              format: ">>>>>Button Pressed: pump_power_button"
+              level: INFO
+          - if:
+              condition:
+                - binary_sensor.is_on: service_switch
+              then:
+                - if:
+                    condition:
+                      - switch.is_off: pump_power
+                    then:
+                      - switch.turn_on: pump_power
+                    else:
+                      - switch.turn_off: pump_power
+              else:
+                - logger.log:
+                    format: ">>>>>Button Pressed: pump_power_button - Service Switch Enabled"
+                    level: INFO
+      - min_length: 1000ms
+        max_length: 5000ms
+        then:
+          - logger.log:
+              format: ">>>>>Button HELD: pump_power_button"
+              level: INFO
+          - if:
+              condition:
+                - binary_sensor.is_on: service_switch
+              then:
+                - script.execute: toggle_pump_speed
+  ## Monentary push button switch switches pump between high and low speeds
+  - platform: gpio
+    internal: true
+    pin: 
+      number: 23
+      mode:
+        input: true
+      inverted: false
+    name: "Pump Speed Button"
+    id: pump_speed_button
+    on_press:
+      - logger.log:
+          format: ">>>>>Button Pressed: pump_speed_button"
+          level: INFO
+      - if:
+          condition:
+            - binary_sensor.is_on: service_switch
+          then: 
+            - if:
+                condition:
+                  - switch.is_on:  heater_bypass
+                then:
+                  - script.execute: turn_off_heater_bypass
+                else:
+                  - script.execute: turn_on_heater_bypass
+          else:
+            - logger.log:
+                format: ">>>>>Button Pressed: pump_speed_button - Service Switch Enabled"
+                level: INFO
+  ## On/Off Latching switch turns off everything so service can be performed
+  - platform: gpio
+    pin:
+      number: 18
+      mode:
+        input: true
+      inverted: true
+    name: "Service Switch"
+    id: service_switch
+    on_press:
+      - light.turn_on:
+          id: device_led
+          effect: "Slow Pulse"
+          red: 0%
+          green: 100%
+          blue: 0%
+          brightness: 80%
+      - climate.control:
+          id: pool_thermostat
+          mode: "OFF"
+    on_release:
+      - light.turn_off: device_led
+
+climate:
+  - platform: thermostat
+    id: pool_thermostat
+    icon: mdi:pool-thermometer
+    name: "Pool Thermostat"
+    sensor: pool_water_temperature
+    startup_delay: true
+    visual:
+      min_temperature: 45
+      max_temperature: 104
+      temperature_step: 1
+    ## Idle Config
+    min_idle_time: 60s
+    idle_action:
+      - if:
+          condition:
+            - binary_sensor.is_off: service_switch
+          then:
+            - switch.turn_off: heat_pump
+          else:
+            - delay: 10s
+            - climate.control:
+                id: pool_thermostat
+                mode: "OFF"
+    ## Heat Config
+    min_heating_off_time: 180s
+    min_heating_run_time: 180s
+    heat_mode:
+      - if:
+          condition:
+            - binary_sensor.is_off: service_switch
+          then:
+            - logger.log:
+                format: ">>>>>Heat Mode enabled"
+                level: INFO
+            - light.turn_on:
+                id: device_led
+                effect: "Slow Pulse"
+                red: 100%
+                green: 0%
+                blue: 0%
+                brightness: 80%
+          else:
+            - logger.log:
+                format: ">>>>>Service Switch Enabled"
+                level: INFO
+            - light.turn_on:
+                id: device_led
+                effect: "Slow Pulse"
+                red: 100%
+                green: 100%
+                blue: 0%
+                brightness: 80%
+    heat_action:
+      - if:
+          condition:
+            - binary_sensor.is_off: service_switch
+          then:
+            - script.execute: turn_on_heat_pump
+          else:
+            - delay: 10s
+            - climate.control:
+                id: pool_thermostat
+                mode: "OFF"
+    off_mode:
+      - logger.log: 
+          format: ">>>>>Off Mode enabled"
+          level: INFO
+      - delay: 2s
+      - script.execute: turn_off_pump
+      - script.wait: turn_off_pump
+      - delay: 2s
+      - script.execute: turn_on_heater_bypass
+      - script.wait: turn_on_heater_bypass
+      - light.turn_off: device_led
