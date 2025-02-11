@@ -9,6 +9,7 @@ substitutions:
   encryption_key: !secret pool-controller_encryption_key
   update_interval: 30s
   one_wire_pin: GPIO04
+  pool_water_temperature_address: "0x46012058f2aafe28"
 
 packages:
   <<: !include_dir_named common
@@ -349,10 +350,14 @@ sensor:
   ## Pool water temperature sensor
   - platform: dallas_temp
     one_wire_id: device_one_wire
-    address: 0x46012058f2aafe28
+    address: ${pool_water_temperature_address}
     device_class: temperature
-    name: "Pool Water Temperature"
+    # name: "Pool Water Temperature"
     id: pool_water_temperature
+  ## Fahrenheit copy of the sensor
+  - platform: copy
+    source_id: pool_water_temperature
+    name: "Pool Water Temperature"
     filters:
       - lambda: return x * (9.0/5.0) + 32.0;
     unit_of_measurement: "°F"
@@ -460,12 +465,14 @@ switch:
       number: 27
       mode:
         output: true
-  - platform: output
+  ## relay that controls bypass valve actuator
+  - platform: gpio
     name: "Heat Pump Bypass"
     internal: true
     id: heater_bypass
-    output: heater_bypass_output
-    restore_mode: ALWAYS_ON
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: 14
     on_turn_off:
       then:
         - text_sensor.template.publish:
@@ -476,21 +483,6 @@ switch:
         - text_sensor.template.publish:
             id: heater_bypass_status
             state: "ON"
-
-output:
-  ## Relay for 24V Diverter
-  - platform: gpio
-    id: heater_bypass_output
-    power_supply: heater_bypass_power_supply
-    pin:
-      number: 14
-
-power_supply:
-  ## Relay to Bypass Heater
-  - id: heater_bypass_power_supply
-    keep_on_time: 45s
-    pin:
-      number: 33
 
 binary_sensor:
   ## Reed switch for patio gate
@@ -630,8 +622,8 @@ climate:
     sensor: pool_water_temperature
     startup_delay: true
     visual:
-      min_temperature: 45
-      max_temperature: 104
+      min_temperature: 8
+      max_temperature: 40
       temperature_step: 1
     ## Idle Config
     min_idle_time: 60s
